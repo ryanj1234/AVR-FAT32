@@ -19,57 +19,6 @@ typedef struct {
 } __attribute__((packed)) f32_sector;
 
 /**
- * Partition table. Appears as the very first entry in a formatted sd card
- */
-typedef struct {
-    uint8_t first_byte;
-    uint8_t start_chs[3];
-    uint8_t partition_type;
-    uint8_t end_chs[3];
-    uint32_t start_sector;
-    uint32_t length_sectors;
-} __attribute__((packed)) PartitionTable;
-
-/**
- * Boot Parameter Block
- */
-typedef struct {
-    uint8_t BS_jmpBoot[3]; /* jump instructions to boot coode */
-    uint8_t BS_OEMName[8]; /* oem name */
-    uint16_t BPB_BytsPerSec; /* bytes per sector */
-    uint8_t BPB_SecPerClus; /* number of sectors per allocation unit */
-    uint16_t BPB_RsvdSecCnt; /* number of reserved sectors in the reserved region */
-    uint8_t BPB_NumFATs; /* count of FATs on the volume */
-    uint16_t BPB_RootEntCnt; /* For FAT32, this must be set to 0 */
-    uint16_t BPB_TotSec16; // if zero, later field is used
-    uint8_t BPB_Media;
-    uint16_t BPB_FATSz16;
-    uint16_t BPB_SecPerTrk;
-    uint16_t BPB_NumHeads;
-    uint32_t BPB_HiddSec;
-    uint32_t BPB_TotSec32;
-
-    /* FAT32 */
-    uint32_t BPB_FATSz32;
-    uint16_t BPB_ExtFlags;
-    uint16_t BPB_FSVer;
-    uint32_t BPB_RootClus;
-    uint16_t BPB_FSInfo;
-    uint16_t BPB_BkBootSec;
-    uint8_t BPB_Reserved[12];
-
-    uint8_t BS_DrvNum;
-    uint8_t BS_Reserved1;
-    uint8_t BS_BootSig;
-    uint32_t BS_VolID;
-    char BS_VolLab[11];
-    char BS_FilSysType[8];
-    char BS_none[420];
-    uint16_t Signature_word;
-} __attribute__((packed)) BootParameterBlock;
-
-
-/**
  * FAT32 file info
  */
 typedef struct {
