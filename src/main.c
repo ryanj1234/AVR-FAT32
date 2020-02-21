@@ -1,69 +1,76 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
+#include <avr/io.h>
+#include "uart.h"
 #include <string.h>
 #include "f32.h"
 
 int main(void)
 {
+    uart_init(9600);
+
+    printf("uart initialized\n");
+
     f32_sector sec;
-    f32_mount(&sec);
-
-    f32_file * fd = f32_open("/MYDIR~1/SECRETS/ASDF.TXT", "w");
-    // f32_ls(0x14e);
-    
-    if(fd == NULL) {
-        printf("File not found!\n");
-    } else {
-        FILE * fi = fopen("hamlet.txt", "r");
-
-        if(fi == NULL) {
-            printf("HAMLET not found!\n");
-            return 1;
-        }
-
-        uint8_t buf[512];
-        while(fread(buf, 512, 1, fi) == 1) {
-            memcpy(sec.data, buf, 512);
-            if(f32_write_sec(fd) != 0) {
-                printf("Error writing sector!\n");
-                break;
-            }
-        }
-
-        fclose(fi);
-        uint16_t rd;
-        f32_seek(fd, 0);
-        while((rd = f32_read(fd)) != F32_EOF) {
-            for(uint16_t i = 0; i < rd; i++) {
-                printf("%c", sec.data[i]);
-            }
-            printf("\n");
-        }
-        // printf("Bytes read %zu\n", rd);
-        // f32_ls(2);
-        // f32_ls(0x14e);
-        // f32_close(fd);
+    printf("mounting...\n");
+    if(f32_mount(&sec)) {
+        printf("Error mounting filesystem\n");
+        while(1) {}
     }
-    
-    return 0;
+
+    printf("Filesystem mounted\n");
+
+    f32_file * fd = f32_open("HARG.TXT", "a");
+    f32_ls(0x2);
+
+    if(fd == NULL) {
+        printf("Error opening file!\n");
+    // } else {
+    //     uint16_t rd;
+    //     while((rd = f32_read(fd)) != F32_EOF) {
+    //         if(rd == 0) {
+    //             printf("No bytes read!\n");
+    //             break;
+    //         }
+    //         for(uint16_t i = 0; i < rd; i++) {
+    //             printf("%c", sec.data[i]);
+    //         }
+    //         printf("\n");
+    //     }
+
+    //     f32_close(fd);
+    // }
+    } else {
+        // char tmp[] = "Hello, world!\n";
+        const uint8_t tmp1[] = {'H', 'e', 'l', 'l', 'o', ',', ' ', 'W', 'o', 'r', 'l', 'd', '!', '\n'};
+        const uint8_t tmp2[] = {'E', 'a', 't', ' ', 'm', 'y', ' ', 'b', 'u', 't', 't', '!', '\n'};
+
+        for(uint16_t i = 0; i < 2000; i++) {
+            printf("%u\n", i);
+            if(f32_write(fd, tmp1, sizeof(tmp1))) {
+                printf("Error writing to file!\n");
+                while(1) {}
+            }
+
+            if(f32_write(fd, tmp2, sizeof(tmp2))) {
+                printf("Error writing to file!\n");
+                while(1) {}
+            }
+        }
+
+        // uint16_t rd;
+        // f32_seek(fd, 0);
+        // while((rd = f32_read(fd)) != F32_EOF) {
+        //     for(uint16_t i = 0; i < rd; i++) {
+        //         printf("%c", sec.data[i]);
+        //     }
+        //     printf("\n");
+        // }
+
+        f32_ls(0x2);
+
+        f32_close(fd);
+    }
+
+    while(1) {}
 }
-
-
-// f32_ls(0x02);
-//         const char new_text[] = "Hello\n";
-//         memcpy(sec.data, new_text, sizeof(new_text));
-//         f32_write(fd, sizeof(new_text)-1);
-//         fd->current_cluster = fd->start_cluster;
-//         fd->file_offset = 0;
-//         fd->sector_count = 0;
-//         uint16_t rd;
-//         while((rd = f32_read(fd)) != F32_EOF) {
-//             for(uint16_t i = 0; i < rd; i++) {
-//                 printf("%c", sec.data[i]);
-//             }
-//             printf("\n");
-//         }
-//         // printf("Bytes read %zu\n", rd);
-//         f32_close(fd);
-//         f32_umount();
