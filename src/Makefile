@@ -82,9 +82,13 @@ SRC = $(TARGET).c
 SRC += f32.c
 SRC += f32_access.c
 SRC += f32_file.c
+SRC += f32_print.c
 SRC += sdcard.c
 SRC += spi.c
 SRC += uart.c
+SRC += ds3231.c
+SRC += ds3231_access.c
+SRC += twimaster.c
 
 # ../fluery-i2c/twimaster.c
 

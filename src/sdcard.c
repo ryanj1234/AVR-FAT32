@@ -5,6 +5,8 @@
 #include "spi.h"
 #include <stdio.h>
 
+#define SD_BLOCK_LEN        512
+
 // command definitions
 #define CMD0                0
 #define CMD0_ARG            0x00000000
@@ -54,84 +56,67 @@
 #define SD_DATA_REJECTED_CRC    0x0B
 #define SD_DATA_REJECTED_WRITE  0x0D
 
+#define CS_ENABLE()             SD_CS_PORT &= ~(1 << SD_CS_PIN)
+#define CS_DISABLE()            SD_CS_PORT |= (1 << SD_CS_PIN)
+
 /** Module specific functions */
-static void sd_powerup_seq(void);
 static void sd_command(uint8_t cmd, uint32_t arg, uint8_t crc);
 static uint8_t sd_read_res1(void);
-static void sd_read_res2(uint8_t *res);
-static void sd_read_res3(uint8_t *res);
 static void sd_read_res7(uint8_t *res);
 static inline void sd_read_bytes(uint8_t *res, uint8_t n);
 static uint8_t sd_go_idle(void);
 static void sd_send_if_cond(uint8_t *res);
-static void sd_send_status(uint8_t *res);
-static void sd_read_ocr(uint8_t *res);
 static uint8_t sd_send_app(void);
 static uint8_t sd_send_op_cond(void);
 
-uint8_t sd_init()
-{
+uint8_t sd_init() {
     uint8_t res[5], cmdAttempts = 0;
 
-    spi_init(SPI_DEFAULT);
+    SD_CS_DDR |= (1 << SD_CS_PIN);
+    CS_DISABLE();
+    spi_init();
 
-    sd_powerup_seq();
+    _delay_ms(10);
 
-    while((res[0] = sd_go_idle()) != SD_IN_IDLE_STATE)
-    {
-        cmdAttempts++;
-        if(cmdAttempts == CMD0_MAX_ATTEMPTS)
-        {
-            return SD_ERROR;
+    while((res[0] = sd_go_idle()) != SD_IN_IDLE_STATE) {
+        if(cmdAttempts++ == CMD0_MAX_ATTEMPTS) {
+            return 1;
         }
     }
 
     _delay_ms(1);
 
     sd_send_if_cond(res);
-    if(res[0] != SD_IN_IDLE_STATE)
-    {
-        return SD_ERROR;
+    if(res[0] != SD_IN_IDLE_STATE) {
+        return 1;
     }
 
-    if(res[4] != 0xAA)
-    {
-        return SD_ERROR;
+    if(res[4] != 0xAA) {
+        return 1;
     }
 
     cmdAttempts = 0;
-    do
-    {
-        if(cmdAttempts == CMD55_MAX_ATTEMPTS)
-        {
-            return SD_ERROR;
-        }
-
+    while(cmdAttempts++ <= CMD55_MAX_ATTEMPTS) {
         res[0] = sd_send_app();
-        if(SD_R1_NO_ERROR(res[0]))
-        {
+        if(SD_R1_NO_ERROR(res[0])) {
             res[0] = sd_send_op_cond();
         }
 
+        if(res[0] == SD_READY) {
+            return 0;
+        }
+
         _delay_ms(1);
-
-        cmdAttempts++;
     }
-    while(res[0] != SD_READY);
-
-    _delay_ms(1);
-
-    sd_read_ocr(res);
-
-    return SD_SUCCESS;
+    
+    return 1;
 }
 
 #define SD_MAX_READ_ATTEMPTS    20000
 // #define SD_MAX_READ_ATTEMPTS    1563
 
-uint8_t sd_read_block(uint32_t addr, uint8_t *buf)
-{
-    uint8_t res1, read;
+uint8_t sd_read_block(uint32_t addr, uint8_t *buf) {
+    uint8_t res1;
     uint16_t readAttempts;
 
     // set token to none
@@ -149,18 +134,15 @@ uint8_t sd_read_block(uint32_t addr, uint8_t *buf)
     res1 = sd_read_res1();
 
     // if response received from card
-    if(res1 != 0xFF)
-    {
+    if(res1 == 0x00) {
         // wait for a response token (timeout = 100ms)
         readAttempts = 0;
-        while(++readAttempts != SD_MAX_READ_ATTEMPTS)
-        {
-            if((read = spi_transfer(0xFF)) != 0xFF) break;
+        while(++readAttempts != SD_MAX_READ_ATTEMPTS) {
+            if((token = spi_transfer(0xFF)) != 0xFF) break;
         }
 
         // if response token is 0xFE
-        if(read == SD_START_TOKEN)
-        {
+        if(token == SD_START_TOKEN) {
             // read 512 byte block
             for(uint16_t i = 0; i < SD_BLOCK_LEN; i++) *buf++ = spi_transfer(0xFF);
 
@@ -168,9 +150,6 @@ uint8_t sd_read_block(uint32_t addr, uint8_t *buf)
             spi_transfer(0xFF);
             spi_transfer(0xFF);
         }
-
-        // set token to card response
-        token = read;
     }
 
     // deassert chip select
@@ -178,21 +157,19 @@ uint8_t sd_read_block(uint32_t addr, uint8_t *buf)
     CS_DISABLE();
     spi_transfer(0xFF);
 
-    if((res1 < 0x02) && (token == SD_START_TOKEN))
-    {
+    if((res1 == 0) && (token == SD_START_TOKEN)) {
         return 0;
     }
 
-    return token;
+    return 1;
 }
 
-#define SD_MAX_WRITE_ATTEMPTS   20000
+#define SD_MAX_WRITE_ATTEMPTS   60000
 // #define SD_MAX_WRITE_ATTEMPTS   3907
 
-uint8_t sd_write_block(uint32_t addr, const uint8_t *buf)
-{
+uint8_t sd_write_block(uint32_t addr, const uint8_t *buf) {
     uint16_t readAttempts;
-    uint8_t res1, read;
+    uint8_t res1;
 
     // set token to none
     uint8_t token = 0xFF;
@@ -209,30 +186,38 @@ uint8_t sd_write_block(uint32_t addr, const uint8_t *buf)
     res1 = sd_read_res1();
 
     // if no error
-    if(res1 == SD_READY)
-    {
+    if(res1 == SD_READY) {
         // send start token
         spi_transfer(SD_START_TOKEN);
 
         // write buffer to card
-        for(uint16_t i = 0; i < SD_BLOCK_LEN; i++) spi_transfer(buf[i]);
+        for(uint16_t i = 0; i < SD_BLOCK_LEN; i++) token = spi_transfer(buf[i]);
 
         // wait for a response (timeout = 250ms)
         readAttempts = 0;
-        while(++readAttempts != SD_MAX_WRITE_ATTEMPTS)
-            if((read = spi_transfer(0xFF)) != 0xFF) { token = 0xFF; break; }
+        while(token == 0xFF) {
+            if(readAttempts++ == SD_MAX_WRITE_ATTEMPTS) {
+                break;
+            }
+            token = spi_transfer(0xFF);
+        }
 
         // if data accepted
-        if((read & 0x1F) == 0x05)
-        {
-            // set token to data accepted
-            token = 0x05;
-
+        if((token & 0x1F) == 0x05) {
             // wait for write to finish (timeout = 250ms)
             readAttempts = 0;
-            while(spi_transfer(0xFF) == 0x00)
-                if(++readAttempts == SD_MAX_WRITE_ATTEMPTS) { token = 0x00; break; }
+            while(spi_transfer(0xFF) == 0x00) {
+                if(readAttempts++ == SD_MAX_WRITE_ATTEMPTS) { 
+                    token = 0x00;
+                    printf("Card timed out!\n");
+                    break;
+                }
+            }
+        } else {
+            printf("Data not accepted!: 0x%02X\n", token);
         }
+    } else {
+        printf("Card not ready!: 0x%02X\n", res1);
     }
 
     // deassert chip select
@@ -240,35 +225,18 @@ uint8_t sd_write_block(uint32_t addr, const uint8_t *buf)
     CS_DISABLE();
     spi_transfer(0xFF);
 
-    if((res1 < 0x02) && (token == 0x05))
-    {
+    if((res1 == 0x00) && ((token & 0x1F) == 0x05)) {
         return 0;
     }
+
+    printf("Res1: 0x%02X, token: 0x%02X\n", res1, token);
 
     return token;
 }
 
-void sd_powerup_seq()
-{
-    // make sure card is deselected
-    CS_DISABLE();
-
-    // give SD card time to power up
-    _delay_ms(10);
-
-    // select SD card
-    spi_transfer(0xFF);
-    CS_DISABLE();
-
-    // send 80 clock cycles to synchronize
-    for(uint8_t i = 0; i < SD_INIT_CYCLES; i++)
-        spi_transfer(0xFF);
-}
-
-void sd_command(uint8_t cmd, uint32_t arg, uint8_t crc)
-{
+void sd_command(uint8_t cmd, uint32_t arg, uint8_t crc) {
     // transmit command to sd card
-    spi_transfer(cmd|0x40);
+    spi_transfer(cmd | 0x40);
 
     // transmit argument
     spi_transfer((uint8_t)(arg >> 24));
@@ -280,13 +248,11 @@ void sd_command(uint8_t cmd, uint32_t arg, uint8_t crc)
     spi_transfer(crc|0x01);
 }
 
-uint8_t sd_read_res1()
-{
+uint8_t sd_read_res1() {
     uint8_t i = 0, res1;
 
     // keep polling until actual data received
-    while((res1 = spi_transfer(0xFF)) == 0xFF)
-    {
+    while((res1 = spi_transfer(0xFF)) & 0x80) {
         // if no data received for 8 bytes, break
         if(i++ > 8) break;
     }
@@ -294,29 +260,7 @@ uint8_t sd_read_res1()
     return res1;
 }
 
-void sd_read_res2(uint8_t *res)
-{
-    // read response 1 in R2
-    res[0] = sd_read_res1();
-
-    // read final byte of response
-    res[1] = spi_transfer(0xFF);
-}
-
-void sd_read_res3(uint8_t *res)
-{
-    // read response 1 in R3
-    res[0] = sd_read_res1();
-
-    // if error reading R1, return
-    if(res[0] > 1) return;
-
-    // read remaining bytes
-    sd_read_bytes(res + 1, R3_BYTES);
-}
-
-void sd_read_res7(uint8_t *res)
-{
+void sd_read_res7(uint8_t *res) {
     // read response 1 in R7
     res[0] = sd_read_res1();
 
@@ -327,13 +271,11 @@ void sd_read_res7(uint8_t *res)
     sd_read_bytes(res + 1, R7_BYTES);
 }
 
-inline void sd_read_bytes(uint8_t *res, uint8_t n)
-{
+inline void sd_read_bytes(uint8_t *res, uint8_t n) {
     while(n--) *res++ = spi_transfer(0xFF);
 }
 
-uint8_t sd_go_idle()
-{
+uint8_t sd_go_idle() {
     // assert chip select
     spi_transfer(0xFF);
     CS_ENABLE();
@@ -353,8 +295,7 @@ uint8_t sd_go_idle()
     return res1;
 }
 
-void sd_send_if_cond(uint8_t *res)
-{
+void sd_send_if_cond(uint8_t *res) {
     // assert chip select
     spi_transfer(0xFF);
     CS_ENABLE();
@@ -372,48 +313,7 @@ void sd_send_if_cond(uint8_t *res)
     spi_transfer(0xFF);
 }
 
-void sd_send_status(uint8_t *res)
-{
-    // assert chip select
-    spi_transfer(0xFF);
-    CS_ENABLE();
-    spi_transfer(0xFF);
-
-    // send CMD13
-    sd_command(CMD13, CMD13_ARG, CMD13_CRC);
-
-    // read response
-    sd_read_res2(res);
-
-    // deassert chip select
-    spi_transfer(0xFF);
-    CS_DISABLE();
-    spi_transfer(0xFF);
-}
-
-void sd_read_ocr(uint8_t *res)
-{
-    // assert chip select
-    spi_transfer(0xFF);
-    CS_ENABLE();
-    uint8_t tmp = spi_transfer(0xFF);
-
-    if(tmp != 0xFF) while(spi_transfer(0xFF) != 0xFF) ;
-
-    // send CMD58
-    sd_command(CMD58, CMD58_ARG, CMD58_CRC);
-
-    // read response
-    sd_read_res3(res);
-
-    // deassert chip select
-    spi_transfer(0xFF);
-    CS_DISABLE();
-    spi_transfer(0xFF);
-}
-
-uint8_t sd_send_app()
-{
+uint8_t sd_send_app() {
     // assert chip select
     spi_transfer(0xFF);
     CS_ENABLE();
@@ -433,8 +333,7 @@ uint8_t sd_send_app()
     return res1;
 }
 
-uint8_t sd_send_op_cond()
-{
+uint8_t sd_send_op_cond() {
     // assert chip select
     spi_transfer(0xFF);
     CS_ENABLE();

@@ -10,6 +10,8 @@
 #include "f32.h"
 #include "f32_file.h"
 #include "f32_access.h"
+#include "f32_print.h"
+void f32_ls(uint32_t dir_cluster);
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
 
@@ -93,7 +95,6 @@ typedef struct {
     uint32_t FSI_TrailSig;
 } __attribute__((packed)) FSInfoStruct;
 
-FILE * in;
 f32_sys * fs;
 f32_sector * buf;
 
@@ -105,15 +106,9 @@ static uint8_t f32_find_file(uint32_t dir_cluster, const char * fname, const cha
 static uint8_t f32_check_file(const char * fname, const char * ext, const DIR_Entry * en);
 
 static uint32_t f32_find_free(void);
-static void f32_print_dir_entry(DIR_Entry * dir);
-static void print_fname(const char * fname);
-static void print_dirname(const char * dirname);
-static void print_date(uint16_t date);
-static void print_timestamp(uint16_t timestamp);
-static void f32_print_bpb(BootParameterBlock * sec);
 static uint8_t f32_dir_entry_empty(const DIR_Entry * en);
 static uint8_t f32_find_empty_entry(uint32_t dir_cluster, uint32_t * sector_offset, uint16_t * dir_offset);
-static uint8_t f32_allocate_cluster(uint32_t current_cluster, uint32_t free_cluster);
+static uint8_t f32_point_cluster(uint32_t current_cluster, uint32_t free_cluster);
 static uint32_t f32_count_free(void);
 
 uint8_t f32_mount(f32_sector * sec) {
@@ -163,31 +158,9 @@ uint8_t f32_mount(f32_sector * sec) {
     fs->data_start_sec = boot_sector + bs->BPB_RsvdSecCnt + bs->BPB_FATSz32*bs->BPB_NumFATs;
     fs->fat_size = bs->BPB_FATSz32;
 
-    f32_print_bpb(bs);
-
     if(io_read_block(fs->fat_start, buf->data)) {
         return 1;
     }
-
-    // read fsinfo sector
-    // if(io_read_block(boot_sector+1, buf->data)) {
-    //     return 1;
-    // }
-
-    // uint32_t cluster_free, cluster_count;
-    // FSInfoStruct * fsinfo = (FSInfoStruct*)buf->data;
-    // if((fsinfo->FSI_LeadSig == 0x41615252) && (fsinfo->FSI_StrucSig == 0x61417272) && (fsinfo->FSI_TrailSig == 0xAA550000)) {
-    //     uint32_t fsinfo_free = fsinfo->FSI_Nxt_Free;
-    //     uint32_t fsinfo_count = fsinfo->FSI_Free_Count;
-    //     cluster_free = f32_find_free();
-    //     if(cluster_free != fsinfo_free) {
-    //         printf("FREE CLUSTERS DON'T MATCH: 0x%08X vs 0x%08X\n\n", fsinfo_free, cluster_free);
-    //     }
-    //     cluster_count = f32_count_free();
-    //     if(cluster_count != fsinfo_count) {
-    //         printf("FREE CLUSTER COUNT DON'T MATCH: %lu vs %lu\n\n", fsinfo_count, cluster_count);
-    //     }
-    // }
 
     return 0;
 }
@@ -195,7 +168,6 @@ uint8_t f32_mount(f32_sector * sec) {
 uint8_t f32_close(f32_file * fd) {
     if(fd != NULL) {
         free(fd);
-        fd = NULL;
     }
 
     return 0;
@@ -203,7 +175,6 @@ uint8_t f32_close(f32_file * fd) {
 
 uint8_t f32_umount() {
     free(fs);
-    fclose(in);
     return 0;
 }
 
@@ -322,10 +293,13 @@ f32_file * f32_open(
         }
     }
 
+
     if(modes[0] == 'w') {
         fd->size = 0;
     } else if (modes[0] == 'a') {
         if(f32_seek(fd, fd->size)) {
+            free(fd);
+            return NULL;
         }
     }
 
@@ -368,7 +342,7 @@ static uint8_t f32_find_empty_entry(
 uint8_t f32_write_sec(f32_file * fd) {
     uint32_t curr_sector = f32_cluster_to_sector(fd->current_cluster) + fd->sector_count;
 
-    uint16_t byte_offset = fd->file_offset % SEC_SIZE;
+    uint16_t byte_offset = fd->file_offset & 0x1FF;
     fd->file_offset -= byte_offset; // reset to beginning of sector
 
     io_write_block(curr_sector, buf->data);
@@ -383,8 +357,6 @@ uint8_t f32_write_sec(f32_file * fd) {
     fd->sector_count++;
     if(fd->sector_count >= fs->sec_per_cluster) {
         uint32_t next_cluster = f32_get_next_cluster(fd->current_cluster);
-        // printf("Next cluster: 0x%08X\n", next_cluster);
-        // fgetc(stdin);
         if(F32_CLUSTER_IS_EOF(next_cluster)) {
             // allocate new cluster
             uint32_t free_cluster = f32_allocate_free();
@@ -393,9 +365,8 @@ uint8_t f32_write_sec(f32_file * fd) {
                 return 1;
             }
 
-            f32_allocate_cluster(fd->current_cluster, free_cluster);
+            f32_point_cluster(fd->current_cluster, free_cluster);
             next_cluster = free_cluster;
-            // f32_allocate_cluster(free_cluster, F32_EOF);
         }
 
         fd->current_cluster = next_cluster;
@@ -408,7 +379,7 @@ uint8_t f32_write_sec(f32_file * fd) {
 uint8_t f32_write(f32_file * fd, const uint8_t * data, uint16_t num_bytes) {
     uint16_t copied_bytes = 0;
     while(copied_bytes < num_bytes) {
-        uint16_t byte_offset = fd->file_offset % SEC_SIZE;
+        uint16_t byte_offset = fd->file_offset & 0x1FF;
         uint16_t chunk = SEC_SIZE - byte_offset; // remaining space in current sector
         uint16_t remains = num_bytes - copied_bytes;
 
@@ -421,12 +392,14 @@ uint8_t f32_write(f32_file * fd, const uint8_t * data, uint16_t num_bytes) {
         }
 
         if(io_read_block(curr_sector, buf->data)) {
+            while(1) {}
             return 1;
         }
 
         memcpy(&buf->data[byte_offset], &data[copied_bytes], chunk);
 
         if(io_write_block(curr_sector, buf->data)) {
+            while(1) {}
             return 1;
         }
 
@@ -446,7 +419,7 @@ uint8_t f32_write(f32_file * fd, const uint8_t * data, uint16_t num_bytes) {
                     return 1;
                 }
 
-                f32_allocate_cluster(fd->current_cluster, free_cluster);
+                f32_point_cluster(fd->current_cluster, free_cluster);
                 next_cluster = free_cluster;
             }
 
@@ -472,8 +445,8 @@ uint8_t f32_seek(f32_file * fd, uint32_t offset) {
     fd->file_offset = 0;
     while(fd->file_offset != offset) {
         // if we are in the correct cluster
-        if(offset - fd->file_offset < fs->sec_per_cluster*SEC_SIZE) {
-            fd->sector_count = (offset - fd->file_offset)/SEC_SIZE;
+        if((offset - fd->file_offset) < (fs->sec_per_cluster<<9)) {
+            fd->sector_count = (offset - fd->file_offset) >> 9;
             fd->file_offset = offset;
         } else {
             uint32_t next_cluster = f32_get_next_cluster(fd->current_cluster);
@@ -485,9 +458,10 @@ uint8_t f32_seek(f32_file * fd, uint32_t offset) {
             }
 
             fd->current_cluster = next_cluster;
-            fd->file_offset += fs->sec_per_cluster*SEC_SIZE;
+            fd->file_offset += fs->sec_per_cluster<<9;
         }
     }
+
     return 0;
 }
 
@@ -498,12 +472,10 @@ static uint32_t _f32_find_free(uint8_t allocate) {
         io_read_block(fs->fat_start + i, buf->data);
         for(uint8_t j = 0; j < SEC_SIZE/FAT32_ENTRY_SIZE; j++) {
             if(*(uint32_t*)&buf->data[j*FAT32_ENTRY_SIZE] == F32_CLUSTER_FREE) {
-                // printf("Allocating cluster 0x%08X at offset 0x%08X\n", cluster, j*4);
                 if(allocate) {
                     *(uint32_t*)&buf->data[j*FAT32_ENTRY_SIZE] |= F32_CLUSTER_EOF;
                     io_write_block(fs->fat_start + i, buf->data);
                 }
-                // fgetc(stdin);
                 return cluster;
             }
 
@@ -536,9 +508,10 @@ static uint32_t f32_count_free() {
     return cluster;
 }
 
+
 static uint32_t f32_get_next_cluster(uint32_t current_cluster) {
-    uint16_t fat_sec = fs->fat_start + current_cluster/128;
-    uint16_t fat_entry = (current_cluster*FAT32_ENTRY_SIZE) % 512;
+    uint16_t fat_sec = fs->fat_start + (current_cluster>>7);
+    uint16_t fat_entry = (current_cluster*FAT32_ENTRY_SIZE) & 0x1FF;
     io_read_block(fat_sec, buf->data);
     return *(uint32_t*)&buf->data[fat_entry] & 0x0FFFFFFF;
 }
@@ -556,7 +529,7 @@ static inline uint8_t f32_dir_entry_empty(const DIR_Entry * en) {
 }
 
 static uint8_t f32_find_file(uint32_t dir_cluster, const char * fname, const char * ext, f32_file * fd) {
-    uint32_t sec_count = 0, dir_sec;
+    uint32_t dir_sec;
 
     while(!F32_CLUSTER_IS_EOF(dir_cluster)) {
         dir_sec = f32_cluster_to_sector(dir_cluster);
@@ -613,129 +586,17 @@ static uint8_t f32_check_file(const char * fname, const char * ext, const DIR_En
     return 1;
 }
 
-static uint8_t f32_allocate_cluster(uint32_t current_cluster, uint32_t free_cluster) {
-    uint32_t sec = fs->fat_start + (FAT32_ENTRY_SIZE*current_cluster)/SEC_SIZE;
+static uint8_t f32_point_cluster(uint32_t current_cluster, uint32_t free_cluster) {
+    uint32_t sec = fs->fat_start + ((FAT32_ENTRY_SIZE*current_cluster) >> 9);
     if(io_read_block(sec, buf->data)) {
         return 1;
     }
 
-    uint16_t offset = FAT32_ENTRY_SIZE*(current_cluster % 128);
+    uint16_t offset = FAT32_ENTRY_SIZE*(current_cluster & 0x7F);
     *(uint32_t*)&buf->data[offset] = (free_cluster) & 0x0FFFFFFF;
     if(io_write_block(sec, buf->data)) {
         return 1;
     }
 
-    // printf("Pointing cluster 0x%08X to 0x%08X at offset %d\n", current_cluster, free_cluster, offset);
-    // fgetc(stdin);
-
     return 0;
-}
-
-void f32_ls(uint32_t dir_cluster) {
-    uint32_t sec_count = 0, dir_sec;
-
-    while(!F32_CLUSTER_IS_EOF(dir_cluster)) {
-        dir_sec = f32_cluster_to_sector(dir_cluster);
-
-        // iterate through every sector in the cluster
-        for(uint32_t sec = 0; sec < fs->sec_per_cluster; sec++) {
-            io_read_block(dir_sec + sec, buf->data);
-
-            // iterate through the entries in current sector
-            for(uint16_t i = 0; i < SEC_SIZE/sizeof(DIR_Entry); i++) {
-                DIR_Entry * en = (DIR_Entry*)&buf->data[i*sizeof(DIR_Entry)];
-
-                // all remaining entries are empty
-                if(en->DIR_Name[0] == 0x00) return;
-
-                // skip empty
-                if(en->DIR_Name[0] == 0xE5) continue;
-
-                f32_print_dir_entry(en);
-            }
-        }
-
-        dir_cluster = f32_get_next_cluster(dir_cluster);
-    }
-}
-
-static void f32_print_dir_entry(DIR_Entry * dir) {
-    if(dir->DIR_Attr == 0x0f) {
-        return;
-    }
-    else if(dir->DIR_Attr & ATTR_VOLUME_ID) {
-        printf("Volume: %s\n", dir->DIR_Name);
-        return;
-    }
-    else if(dir->DIR_Attr & ATTR_DIRECTORY) {
-        print_dirname(dir->DIR_Name);
-    }
-    else {
-        print_fname(dir->DIR_Name);
-    }
-    printf("\tAttr: 0x%02X\n", dir->DIR_Attr);
-    printf("\tCluster: 0x%02X%02X\n", dir->DIR_FstClusHI, dir->DIR_FstClusLO);
-    printf("\tSize: %lu (bytes)\n", dir->DIR_FileSize);
-    printf("\tCreated: ");
-    print_date(dir->DIR_CrtDate);
-    printf(" - ");
-    print_timestamp(dir->DIR_CrtTime);
-    printf("\tLast Access: ");
-    print_date(dir->DIR_LstAccDate);
-    printf("\n\tLast Modified: ");
-    print_date(dir->DIR_WrtDate);
-    printf(" - ");
-    print_timestamp(dir->DIR_WrtTime);
-}
-
-
-static inline void print_fname(const char * fname) {
-    const char * pbegin = fname;
-    const char * pend = &fname[7];
-    while(*pend == 0x20) {
-        pend--;
-        if(pend == pbegin)
-            return;
-    }
-    while(pbegin != pend) printf("%c", *pbegin++);
-    printf("%c.%c%c%c\n", *pend, fname[8], fname[9], fname[10]);
-}
-
-static inline void print_dirname(const char * dirname) {
-    const char * pbegin = dirname;
-    const char * pend = &dirname[10];
-    while(*pend == 0x20)  {
-        pend--;
-        if(pend == pbegin)
-            return;
-    }
-    while(pbegin != pend) printf("%c", *pbegin++);
-    printf("%c/\n", *pend);
-}
-
-static inline void print_date(uint16_t date) {
-    uint8_t month = (date >> 5) & 0x7;
-    uint8_t day = date & 0xF;
-    uint16_t year = (date >> 9) + 1980;
-    printf("%u/%u/%u", month, day, year);
-}
-
-static inline void print_timestamp(uint16_t timestamp) {
-    uint8_t hours = (timestamp >> 11);
-    uint8_t minutes = (timestamp >> 5) & 0x3F;
-    uint8_t seconds = (timestamp & 0x1F) * 2;
-    printf("%02u:%02u:%02u\n", hours, minutes, seconds);
-}
-
-static void f32_print_bpb(BootParameterBlock * sec) {
-    printf("\tSector Size: %u\n", sec->BPB_BytsPerSec);
-    printf("\tSectors Per Cluster: %u\n", sec->BPB_SecPerClus);
-    printf("\tReserved Sectors: %u\n", sec->BPB_RsvdSecCnt);
-    printf("\tNum FAT: %u\n", sec->BPB_NumFATs);
-    printf("\tMedia Descriptor: 0x%02X\n", sec->BPB_Media);
-    printf("\tFAT Size Sectors: %lu\n", sec->BPB_FATSz32);
-    printf("\tRoot Cluser: %lu\n", sec->BPB_RootClus);
-    printf("\tVolume label: ");
-    for(int i = 0; i < 11; i++) printf("%c", sec->BS_VolLab[i]);
-    printf("\n");
 }

@@ -4,7 +4,7 @@
 #include <stdio.h>
 
 #define PRINT_WIDTH     32
-static void print_sector(uint32_t addr, const uint8_t * buf) {
+void f32_print_sector(uint32_t addr, const uint8_t * buf) {
     return;
     printf("Sector %lu\n", addr);
     // return;
@@ -23,7 +23,7 @@ static void print_sector(uint32_t addr, const uint8_t * buf) {
     printf("\n\n");
 }
 
-uint8_t io_init() {
+inline uint8_t io_init() {
     return sd_init();
 }
 
@@ -32,7 +32,7 @@ inline uint8_t io_read_block(uint32_t addr, uint8_t * buf) {
         return 1;
     }
 
-    print_sector(addr, buf);
+    f32_print_sector(addr, buf);
     return 0;
 }
 
@@ -41,7 +41,7 @@ inline uint8_t io_write_block(uint32_t addr, const uint8_t *buf) {
         return 1;
     }
 
-    print_sector(addr, buf);
+    f32_print_sector(addr, buf);
     return 0;
 }
 
@@ -49,7 +49,7 @@ inline uint8_t io_write_block(uint32_t addr, const uint8_t *buf) {
 #include <stdint.h>
 #include <stdio.h>
 
-extern FILE * in;
+FILE * in;
 
 uint8_t sd_init() {
     in = fopen("test_mmc.img", "rb+");
@@ -68,7 +68,7 @@ uint8_t sd_read_block(uint32_t addr, uint8_t * buf) {
 
     fseek(in, addr*SEC_SIZE, SEEK_SET);
     if(fread(buf, SEC_SIZE, 1, in) == 1) {
-        print_sector(addr, buf);
+        // f32_print_sector(addr, buf);
         return 0;
     }
 
@@ -82,7 +82,7 @@ uint8_t sd_write_block(uint32_t addr, const uint8_t *buf) {
     fseek(in, addr*SEC_SIZE, SEEK_SET);
     size_t a;
     if((a = fwrite(buf, SEC_SIZE, 1, in)) == 1) {
-        print_sector(addr, buf);
+        // f32_print_sector(addr, buf);
 
         return 0;
     }

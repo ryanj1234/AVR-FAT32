@@ -7,7 +7,9 @@
 #include <avr/io.h>
 #endif
 
-#define F32_NO_RTC      1
+#ifndef F32_NO_RTC
+#define F32_NO_RTC      0
+#endif
 
 #define SEC_SIZE        512
 #define F32_READ_ONLY   0

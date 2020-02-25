@@ -3,8 +3,12 @@
 #include "f32_access.h"
 #include <string.h>
 #include <stdio.h>
+#include "rtc.h"
 
 extern f32_sector * buf;
+#if !F32_NO_RTC
+extern RTC rtc;
+#endif
 
 uint8_t f32_create_file(
         f32_file * fd,
@@ -35,9 +39,18 @@ uint8_t f32_create_file(
     en.DIR_CrtDate = 0;
     en.DIR_LstAccDate = 0;
     #else
-    #error "No RTC functions defined!"
+    if(rtc.sec & 0x01) {
+        en.DIR_CrtTimeTenth = 10;
+    }
+    en.DIR_CrtTime = (rtc.sec >> 1) & 0x1F;
+    en.DIR_CrtTime |= (uint16_t)(rtc.min & 0x3F) << 5;
+    en.DIR_CrtTime |= (uint16_t)(rtc.hour & 0x3F) << 11;
+    en.DIR_CrtDate = rtc.mday;
+    en.DIR_CrtDate |= (uint16_t)(rtc.month & 0x0F) << 5;
+    en.DIR_CrtDate |= (uint16_t)((rtc.year - 1980) & 0x7F) << 9;
     #endif
 
+    en.DIR_LstAccDate = en.DIR_CrtDate;
     en.DIR_WrtTime = en.DIR_CrtTime;
     en.DIR_WrtDate = en.DIR_CrtDate;
 
@@ -65,6 +78,14 @@ uint8_t f32_update_file(const f32_file * fd) {
     if(io_read_block(fd->file_entry_sector, buf->data)) { return 1; }
     DIR_Entry * en = (DIR_Entry*)&buf->data[fd->file_entry_offset];
     en->DIR_FileSize = fd->size;
+    #if !F32_NO_RTC
+    en->DIR_WrtTime = (rtc.sec >> 1) & 0x1F;
+    en->DIR_WrtTime |= (uint16_t)(rtc.min & 0x3F) << 5;
+    en->DIR_WrtTime |= (uint16_t)(rtc.hour & 0x3F) << 11;
+    en->DIR_WrtDate = rtc.mday;
+    en->DIR_WrtDate |= (uint16_t)(rtc.month & 0x0F) << 5;
+    en->DIR_WrtDate |= (uint16_t)((rtc.year - 1980) & 0x7F) << 9;
+    #endif
     if(io_write_block(fd->file_entry_sector, buf->data)) { return 1; }
     return 0;
 }

@@ -1,76 +1,97 @@
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <util/delay.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <avr/io.h>
-#include "uart.h"
 #include <string.h>
+#include "uart.h"
 #include "f32.h"
+#include "ds3231.h"
+#include "rtc.h"
 
-int main(void)
+RTC rtc;
+
+#define ALARM_PERIOD        1 // seconds
+
+#define LED_PIN             PINB0
+#define LED_PORT            PORTB
+#define LED_DDR             DDRB
+
+void configure_int0(void)
 {
-    uart_init(9600);
+    DDRD &= ~(1 << PIND2);
+    PORTD |= (1 << PIND2);
+    EICRA |= (1 << ISC01); // trigger on rising edge
+    EIMSK |= (1 << INT0);  // enable int0 interrupts
+}
 
+volatile uint8_t update_time = 0;
+ISR(INT0_vect)
+{
+    update_time = 1;
+}
+
+int main(void) {
+    RTC atime; // RTC alarm time
+    uart_init(57600);
     printf("uart initialized\n");
 
+    ds3231_dev ds3231 = get_ds3213();
+    printf("RTC initialized\n");
+
+    LED_DDR |= (1 << LED_PIN);
+
     f32_sector sec;
-    printf("mounting...\n");
     if(f32_mount(&sec)) {
+        LED_PORT |= (1 << LED_PIN);
         printf("Error mounting filesystem\n");
         while(1) {}
     }
 
-    printf("Filesystem mounted\n");
-
-    f32_file * fd = f32_open("HARG.TXT", "a");
-    f32_ls(0x2);
+    ds3231_gettime(ds3231, &rtc);
+    f32_file * fd = f32_open("HELLO.TXT", "a");
 
     if(fd == NULL) {
+        LED_PORT |= (1 << LED_PIN);
         printf("Error opening file!\n");
-    // } else {
-    //     uint16_t rd;
-    //     while((rd = f32_read(fd)) != F32_EOF) {
-    //         if(rd == 0) {
-    //             printf("No bytes read!\n");
-    //             break;
-    //         }
-    //         for(uint16_t i = 0; i < rd; i++) {
-    //             printf("%c", sec.data[i]);
-    //         }
-    //         printf("\n");
-    //     }
-
-    //     f32_close(fd);
-    // }
-    } else {
-        // char tmp[] = "Hello, world!\n";
-        const uint8_t tmp1[] = {'H', 'e', 'l', 'l', 'o', ',', ' ', 'W', 'o', 'r', 'l', 'd', '!', '\n'};
-        const uint8_t tmp2[] = {'E', 'a', 't', ' ', 'm', 'y', ' ', 'b', 'u', 't', 't', '!', '\n'};
-
-        for(uint16_t i = 0; i < 2000; i++) {
-            printf("%u\n", i);
-            if(f32_write(fd, tmp1, sizeof(tmp1))) {
-                printf("Error writing to file!\n");
-                while(1) {}
-            }
-
-            if(f32_write(fd, tmp2, sizeof(tmp2))) {
-                printf("Error writing to file!\n");
-                while(1) {}
-            }
-        }
-
-        // uint16_t rd;
-        // f32_seek(fd, 0);
-        // while((rd = f32_read(fd)) != F32_EOF) {
-        //     for(uint16_t i = 0; i < rd; i++) {
-        //         printf("%c", sec.data[i]);
-        //     }
-        //     printf("\n");
-        // }
-
-        f32_ls(0x2);
-
-        f32_close(fd);
+        while(1) {}
     }
 
-    while(1) {}
+    /** alarm time */
+    atime.sec = 0;
+    ds3231_enable_alarm1(&ds3231);
+
+    configure_int0();
+    sei();
+
+    char buf[32];
+
+    while(1) {
+        LED_PORT |= (1 << LED_PIN);
+
+        ds3231_gettime(ds3231, &rtc);
+        int n = sprintf(buf,
+            "[%4u/%02u/%02u %02u:%02u:%02u] Hello\n",
+            rtc.year,
+            rtc.month,
+            rtc.mday,
+            rtc.hour,
+            rtc.min,
+            rtc.sec);
+        uart_puts(buf);
+
+        ds3231_clear_alarm1_flag(&ds3231);
+        atime.sec = rtc.sec + ALARM_PERIOD;
+        if(atime.sec > 59) { atime.sec -= 60; }
+        ds3231_set_alarm1(&ds3231, &atime, match_seconds);
+
+        if(f32_write(fd, (uint8_t*)buf, n)) {
+            printf("Error writing to file!\n");
+        }
+
+        LED_PORT &= ~(1 << LED_PIN);
+
+        while(!update_time) {}
+        update_time = 0;
+    }
 }
